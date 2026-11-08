@@ -33,12 +33,14 @@ inline QByteArray finalPacket() { return packetFromHexPrefix("0705"); }
 // One byte per LED per channel. Order matches the original script: B, G, R.
 inline std::vector<QByteArray> colorPackets(const std::vector<QRgb>& leds) {
     struct Channel { int shift; int firstId; };
-    static constexpr Channel kChannels[] = {{0, 0x07}, {8, 0x09}, {16, 0x0b}};
+    static constexpr Channel kChannels[] = {{0, 0x0b}, {8, 0x09}, {16, 0x07}};
     std::vector<QByteArray> out;
     for (const auto& ch : kChannels) {
         for (int half = 0; half < 2; ++half) {
             QByteArray p;
-            for (int b : {0x07, 0x03, 0x06, ch.firstId + half, 0x00, 0x00}) p.append(char(b));
+            for (int b : {ch.firstId, 0x03, 0x06, ch.firstId + half, 0x00, 0x00}) {
+                p.append(char(b));
+            }
             for (int j = 0; j < kLedsPerPacket; ++j) {
                 const std::size_t idx = std::size_t(half * kLedsPerPacket + j);
                 const QRgb c = idx < leds.size() ? leds[idx] : qRgb(0, 0, 0);
