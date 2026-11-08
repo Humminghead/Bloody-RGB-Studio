@@ -301,5 +301,5 @@ Issues and pull requests are welcome. The most valuable contributions are protoc
 
 ## License
 
-Add a `LICENSE` file before publishing. The original Python project declares the MIT license, and MIT is
-a natural choice here too.
+ Apache [`License`](https://github.com/Humminghead/Bloody-RGB-Studio/blob/master/LICENSE.md) Version 2.0, January 2004
+                        
