@@ -4,6 +4,7 @@
 #include <QRectF>
 #include <QSizeF>
 #include <QString>
+#include <QList>
 #include <vector>
 #include <algorithm>
 
