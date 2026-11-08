@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Bloody RGB Studio
+Comment=RGB animation editor for A4Tech Bloody keyboards
+Exec=bloody-rgb
+Icon=bloody-rgb
+Categories=Utility;Settings;HardwareSettings;
+Terminal=false
