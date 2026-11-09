@@ -4,6 +4,8 @@
 #include <QByteArray>
 #include <QRgb>
 #include <vector>
+#include <iterator>
+#include <algorithm>
 
 namespace bloody {
 
@@ -31,22 +33,52 @@ inline std::vector<QByteArray> initSequence() {
 inline QByteArray finalPacket() { return packetFromHexPrefix("0705"); }
 
 // One byte per LED per channel. Order matches the original script: B, G, R.
-inline std::vector<QByteArray> colorPackets(const std::vector<QRgb>& leds) {
-    struct Channel { int shift; int firstId; };
-    static constexpr Channel kChannels[] = {{0, 0x07}, {8, 0x09}, {16, 0x0b}};
+inline std::vector<QByteArray> colorPackets(const std::vector<QRgb> &leds) {
+    enum class ColorChannelId : char { Blue = 0x0b, Green = 0x09, Red = 0x07 };
+
+    struct ColorChannel {
+        int shift;
+        ColorChannelId colorId;
+    };
+
+    static constexpr std::array<ColorChannel, 3> channels{
+        {{0, ColorChannelId::Blue}, {8, ColorChannelId::Green}, {16, ColorChannelId::Red}}};
+
+    //
     std::vector<QByteArray> out;
-    for (const auto& ch : kChannels) {
-        for (int half = 0; half < 2; ++half) {
-            QByteArray p;
-            for (int b : {0x07, 0x03, 0x06, ch.firstId + half, 0x00, 0x00}) p.append(char(b));
+
+    QByteArray p;
+    p.reserve(kPacketBytes);
+    p.resize(6);
+
+    // 0 [color id],
+    p[1] = 0x03;
+    p[2] = 0x06;
+    // 3 [color id + half]
+    // 4 0x00
+    // 5 0x00
+
+    std::ranges::for_each(channels, [&](const ColorChannel &ch) {
+        for (char half = 0, halfId = 0; half < 2; ++half) {
+            halfId += half;
+
+            // Clear old data
+            auto it = std::begin(p);
+            std::advance(it, 6);
+            p.erase(it, p.end());
+
+            p[0] = static_cast<char>(ch.colorId);
+            p[3] = static_cast<char>(ch.colorId)+ halfId;
+
             for (int j = 0; j < kLedsPerPacket; ++j) {
                 const std::size_t idx = std::size_t(half * kLedsPerPacket + j);
                 const QRgb c = idx < leds.size() ? leds[idx] : qRgb(0, 0, 0);
-                p.append(char((c >> ch.shift) & 0xff));
+                p.push_back(char((c >> ch.shift) & 0xff));
             }
             out.push_back(p);
         }
-    }
+    });
+
     return out;
 }
 
