@@ -22,6 +22,12 @@
 #include <QSystemTrayIcon>
 #include <QTimer>
 
+enum class AppStatus{
+    UsbConnected,
+    UsbDisconnected,
+    Unknown
+};
+
 class MainWindow : public QMainWindow {
     Q_OBJECT
 public:
@@ -49,7 +55,7 @@ private:
 
     void tick();
     void toggleConnection();
-    void sendFrame(const std::vector<QRgb>& colors);
+    bool sendFrame(const std::vector<QRgb>& colors);
     void pickColor(bool primary);
     void refreshColorButtons();
     void setStatus(const QString& text, bool error = false);
@@ -77,7 +83,8 @@ private:
     QPushButton *primaryBtn_ = nullptr, *secondaryBtn_ = nullptr, *connectBtn_ = nullptr;
     QPushButton *newBtn_ = nullptr, *editBtn_ = nullptr, *delBtn_ = nullptr;
     QSlider *speed_ = nullptr, *brightness_ = nullptr;
-    QCheckBox *uniform_ = nullptr, *handshake_ = nullptr, *apply_ = nullptr, *legacy_ = nullptr, *reset_ = nullptr;
+    QCheckBox *uniform_ = nullptr, *handshake_ = nullptr, *apply_ = nullptr, *legacy_ = nullptr, *reset_ = nullptr,
+              *reconnect_ = nullptr;
     QSpinBox* fps_ = nullptr;
     QComboBox* offEffect_ = nullptr;
     QCheckBox* offOnLock_ = nullptr;
@@ -91,4 +98,5 @@ private:
     QActionGroup* effectGroup_ = nullptr;
     QList<QAction*> effectActions_;
     bool quitting_ = false, trayHintShown_ = false;
+    AppStatus app_status_{AppStatus::Unknown};
 };

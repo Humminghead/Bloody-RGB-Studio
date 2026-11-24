@@ -146,6 +146,7 @@ void MainWindow::buildUi() {
     apply_ = new QCheckBox("Send to keyboard"); apply_->setChecked(true);
     reset_ = new QCheckBox("Reset device on connect (as Python tool)"); reset_->setChecked(true);
     legacy_ = new QCheckBox("Legacy libusb mode (keys stop working)");
+    reconnect_ = new QCheckBox("Automatic reconnection");
     connect(uniform_, &QCheckBox::toggled, this, [this](bool on) { params_.uniform = on; });
     connectBtn_ = new QPushButton("Connect"); connectBtn_->setObjectName("accent");
     connect(connectBtn_, &QPushButton::clicked, this, &MainWindow::toggleConnection);
@@ -157,6 +158,7 @@ void MainWindow::buildUi() {
     dev->addRow(apply_);
     dev->addRow(reset_);
     dev->addRow(legacy_);
+    dev->addRow(reconnect_);
     dev->addRow(connectBtn_);
     dev->addRow(status_);
     row->addWidget(devBox, 3);
@@ -348,8 +350,9 @@ void MainWindow::deleteEffect() {
 void MainWindow::toggleConnection() {
     if (device_.isOpen()) {
         device_.close();
-        connectBtn_->setText("Connect");
         setStatus("Disconnected – preview only");
+        app_status_ = AppStatus::UsbDisconnected;
+        connectBtn_->setText("Connect");
         return;
     }
     bool okV = false, okP = false;
@@ -362,23 +365,37 @@ void MainWindow::toggleConnection() {
     QString err;
     if (!device_.open(std::uint16_t(vid), std::uint16_t(pid), !legacy_->isChecked(), reset_->isChecked(), &err)) {
         setStatus(err, true);
+        device_.close();
+        app_status_ = AppStatus::UsbDisconnected;
+        connectBtn_->setText("Connect");
         return;
     }
     if (!handshake_->isChecked())   // otherwise the handshake is sent with every update
         for (const auto& pkt : bloody::initSequence())
-            if (!device_.send(pkt, &err)) { setStatus(err, true); device_.close(); return; }
+            if (!device_.send(pkt, &err)) {
+                setStatus(err, true);
+                device_.close();
+                app_status_ = AppStatus::UsbDisconnected;
+                connectBtn_->setText("Connect");
+                return;
+            }
     lastSent_.clear();
     connectBtn_->setText("Disconnect");
     setStatus("Connected via " + device_.backend() + ". If nothing changes, press Fn+1 on the keyboard.");
 }
 
-void MainWindow::sendFrame(const std::vector<QRgb>& colors) {
+bool MainWindow::sendFrame(const std::vector<QRgb>& colors) {
+    if (app_status_ != AppStatus::UsbConnected) {
+        lastSent_.clear();
+        return false;
+    }
+
     // The keyboard has 116 LED slots, the preview 104 keys: unused slots repeat the first key.
     std::vector<QRgb> leds(bloody::kLedCount, colors.empty() ? qRgb(0, 0, 0) : colors.front());
     if (!params_.uniform)
         std::copy_n(colors.begin(), std::min<std::size_t>(colors.size(), leds.size()), leds.begin());
 
-    if (leds == lastSent_) return;   // nothing changed (e.g. Static effect)
+    if (leds == lastSent_) return true;   // nothing changed (e.g. Static effect)
     lastSent_ = leds;
     ++sends_;
 
@@ -391,11 +408,14 @@ void MainWindow::sendFrame(const std::vector<QRgb>& colors) {
     for (const auto& pkt : packets) {
         if (!device_.send(pkt, &err)) {
             device_.close();
-            connectBtn_->setText("Connect");
+            lastSent_.clear();
             setStatus("USB error: " + err, true);
-            return;
+            app_status_ = AppStatus::UsbDisconnected;
+            return false;
         }
     }
+
+    return true;
 }
 
 void MainWindow::tick() {
@@ -415,7 +435,24 @@ void MainWindow::tick() {
     }
     view_->setColors(colors);
     ++frames_;
-    if (device_.isOpen() && apply_->isChecked()) sendFrame(colors);
+    if (device_.isOpen()) {
+        if (apply_->isChecked()) {
+            if (!sendFrame(colors)) {
+                if (reconnect_->isChecked())
+                    connectBtn_->click();
+            };
+        }
+    } else {
+        connectBtn_->setText("Connect");
+        if (app_status_ == AppStatus::UsbConnected) {
+            device_.close();
+            app_status_ = AppStatus::UsbDisconnected;
+        }
+
+        if (reconnect_->isChecked() && app_status_ == AppStatus::UsbDisconnected) {
+            connectBtn_->click();
+        }
+    }
 
     if (fpsClock_.elapsed() >= 1000) {
         const double s = fpsClock_.restart() / 1000.0;
