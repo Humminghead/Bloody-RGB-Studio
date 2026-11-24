@@ -146,19 +146,9 @@ void MainWindow::buildUi() {
     apply_ = new QCheckBox("Send to keyboard"); apply_->setChecked(true);
     reset_ = new QCheckBox("Reset device on connect (as Python tool)"); reset_->setChecked(true);
     legacy_ = new QCheckBox("Legacy libusb mode (keys stop working)");
-    reconnect_ = new QCheckBox("Automatic reconnection");
     connect(uniform_, &QCheckBox::toggled, this, [this](bool on) { params_.uniform = on; });
     connectBtn_ = new QPushButton("Connect"); connectBtn_->setObjectName("accent");
     connect(connectBtn_, &QPushButton::clicked, this, &MainWindow::toggleConnection);
-    connect(reconnect_, &QCheckBox::toggled, [&](auto) {
-        if (app_status_ == AppStatus::UsbDisconnected) {
-            recconect_timer_.start();
-        } else {
-            recconect_timer_.stop();
-        }
-    });
-    connect(&recconect_timer_, &QTimer::timeout, [&] { connectBtn_->click(); });
-
     status_ = new QLabel("Not connected – preview only"); status_->setWordWrap(true);
     dev->addRow("Vendor ID", vid_);
     dev->addRow("Product ID", pid_);
@@ -167,16 +157,9 @@ void MainWindow::buildUi() {
     dev->addRow(apply_);
     dev->addRow(reset_);
     dev->addRow(legacy_);
-    dev->addRow(reconnect_);    
     dev->addRow(connectBtn_);
     dev->addRow(status_);
     row->addWidget(devBox, 3);
-
-    recconect_timer_.setInterval(1000);
-
-    if(reconnect_->isChecked()){
-        recconect_timer_.start();
-    }
 
     setCentralWidget(root);
 }
@@ -367,7 +350,6 @@ void MainWindow::toggleConnection() {
         device_.close();
         connectBtn_->setText("Connect");
         setStatus("Disconnected – preview only");
-        app_status_ = AppStatus::UsbDisconnected;
         return;
     }
     bool okV = false, okP = false;
@@ -380,21 +362,14 @@ void MainWindow::toggleConnection() {
     QString err;
     if (!device_.open(std::uint16_t(vid), std::uint16_t(pid), !legacy_->isChecked(), reset_->isChecked(), &err)) {
         setStatus(err, true);
-        app_status_ = AppStatus::UsbDisconnected;
         return;
     }
     if (!handshake_->isChecked())   // otherwise the handshake is sent with every update
         for (const auto& pkt : bloody::initSequence())
-            if (!device_.send(pkt, &err)) {
-                setStatus(err, true);
-                device_.close();
-                app_status_ = AppStatus::UsbDisconnected;
-                return;
-            }
+            if (!device_.send(pkt, &err)) { setStatus(err, true); device_.close(); return; }
     lastSent_.clear();
     connectBtn_->setText("Disconnect");
     setStatus("Connected via " + device_.backend() + ". If nothing changes, press Fn+1 on the keyboard.");
-    app_status_ = AppStatus::UsbConnected;
 }
 
 void MainWindow::sendFrame(const std::vector<QRgb>& colors) {
@@ -418,7 +393,6 @@ void MainWindow::sendFrame(const std::vector<QRgb>& colors) {
             device_.close();
             connectBtn_->setText("Connect");
             setStatus("USB error: " + err, true);
-            app_status_ = AppStatus::UsbDisconnected;
             return;
         }
     }
