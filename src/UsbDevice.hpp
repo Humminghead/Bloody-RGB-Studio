@@ -20,7 +20,7 @@ public:
 
     bool open(std::uint16_t vid, std::uint16_t pid, bool preferHidraw, bool resetFirst, QString* error);
     void close();
-    bool isOpen() const { return fd_ >= 0 || handle_ != nullptr; }
+    bool isOpen() const;
     bool send(const QByteArray& packet, QString* error);
     QString backend() const { return backend_; }
 

@@ -97,6 +97,8 @@ void UsbDevice::close() {
     backend_.clear();
 }
 
+bool UsbDevice::isOpen() const { return fd_ >= 0 || handle_ != nullptr; }
+
 bool UsbDevice::send(const QByteArray& packet, QString* error) {
     if (fd_ >= 0) {
         const int rc = ::ioctl(fd_, HIDIOCSFEATURE(packet.size()), const_cast<char*>(packet.constData()));
