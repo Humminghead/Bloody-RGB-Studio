@@ -8,7 +8,7 @@
 
 namespace bloody {
 
-enum class EffectType { Static, Breathing, ColorCycle, RainbowWave, GradientWave, Twinkle };
+enum class EffectType { Static, Breathing, ColorCycle, RainbowWave, GradientWave, Twinkle, None };
 
 inline const char* effectName(EffectType t) {
     switch (t) {
@@ -18,8 +18,9 @@ inline const char* effectName(EffectType t) {
         case EffectType::RainbowWave:  return "Rainbow wave";
         case EffectType::GradientWave: return "Gradient wave";
         case EffectType::Twinkle:      return "Twinkle";
-    }
-    return "";
+        default:
+            return "";
+    }    
 }
 
 struct EffectParams {
@@ -78,7 +79,9 @@ inline std::vector<QRgb> renderEffect(const EffectParams& p, double t,
                 c = detail::mix(p.secondary.darker(300), p.primary, v);
                 break;
             }
-        }
+            case EffectType::None:
+                break;
+            }
         out.push_back(qRgb(int(c.red() * p.brightness + 0.5),
                            int(c.green() * p.brightness + 0.5),
                            int(c.blue() * p.brightness + 0.5)));

@@ -34,13 +34,14 @@ static QIcon makeIcon() {
 }
 
 MainWindow::MainWindow() : layout_(bloody::buildLayout()) {
+    const QString vid = "0x09DA", pid = "0xFA10";
     setWindowTitle("Bloody RGB Studio");
     setWindowIcon(makeIcon());
     resize(1100, 780);
     qApp->setStyleSheet(kStyle);
 
     userEffects_ = bloody::loadUserEffects(bloody::userEffectsPath());
-    buildUi();
+    buildUi(vid,pid);
     buildTray();
     rebuildEffectList("Static");
     screen_ = new ScreenWatcher(this);
@@ -51,17 +52,44 @@ MainWindow::MainWindow() : layout_(bloody::buildLayout()) {
     loadSettings();
     refreshColorButtons();
 
+    hidmon_.onConnect([this](auto devnode) {
+        if (!reconnect_->isChecked())
+            return;
+
+        if (auto temp = QString(devnode.data());
+            !device_.isOpen() &&
+            device_.openHidRaw(
+                vid_->text().toUShort(nullptr, 16), pid_->text().toUShort(nullptr, 16), &connectionErr_, &temp)) {
+            status_->clear();
+        }
+    });
+    hidmon_.onDisconnect([this](auto) {
+        if (device_.isOpen()) {
+            device_.close();
+            status_->clear();
+        }
+    });
+
+    auto iVid = std::stoi(vid.toStdString().erase(0, 2), nullptr, 16);
+    auto iPid = std::stoi(pid.toStdString().erase(0, 2), nullptr, 16);
+    hidmon_.setup(iVid, iPid);
+
     clock_.start();
     fpsClock_.start();
-    connect(&timer_, &QTimer::timeout, this, &MainWindow::tick);
+    connect(&timer_, &QTimer::timeout, this, &MainWindow::renderUi);
     timer_.start(1000 / fps_->value());
+
+    hidmon_th_ = std::jthread{[this](std::stop_token stoken) { hidmon_.run(stoken); }};
 }
 
-MainWindow::~MainWindow() { saveSettings(); }
+MainWindow::~MainWindow() {
+    hidmon_th_.request_stop();
+    saveSettings();
+}
 
 // ------------------------------------------------------------------ UI
 
-void MainWindow::buildUi() {
+void MainWindow::buildUi(const QString& devVid, const QString& devPid) {
     auto* root = new QWidget; root->setObjectName("root");
     auto* col = new QVBoxLayout(root);
     col->setContentsMargins(20, 16, 20, 20);
@@ -140,12 +168,14 @@ void MainWindow::buildUi() {
     // Device
     auto* devBox = new QGroupBox("Keyboard");
     auto* dev = new QFormLayout(devBox);
-    vid_ = new QLineEdit("0x09DA"); pid_ = new QLineEdit("0xFA10");
+    vid_ = new QLineEdit(devVid);
+    pid_ = new QLineEdit(devPid);
     uniform_ = new QCheckBox("Whole keyboard (safe mode)"); uniform_->setChecked(true);
     handshake_ = new QCheckBox("Full handshake every frame"); handshake_->setChecked(true);
     apply_ = new QCheckBox("Send to keyboard"); apply_->setChecked(true);
     reset_ = new QCheckBox("Reset device on connect (as Python tool)"); reset_->setChecked(true);
     legacy_ = new QCheckBox("Legacy libusb mode (keys stop working)");
+    reconnect_ = new QCheckBox("Automatic reconnection");
     connect(uniform_, &QCheckBox::toggled, this, [this](bool on) { params_.uniform = on; });
     connectBtn_ = new QPushButton("Connect"); connectBtn_->setObjectName("accent");
     connect(connectBtn_, &QPushButton::clicked, this, &MainWindow::toggleConnection);
@@ -157,6 +187,7 @@ void MainWindow::buildUi() {
     dev->addRow(apply_);
     dev->addRow(reset_);
     dev->addRow(legacy_);
+    dev->addRow(reconnect_);
     dev->addRow(connectBtn_);
     dev->addRow(status_);
     row->addWidget(devBox, 3);
@@ -348,7 +379,6 @@ void MainWindow::deleteEffect() {
 void MainWindow::toggleConnection() {
     if (device_.isOpen()) {
         device_.close();
-        connectBtn_->setText("Connect");
         setStatus("Disconnected – preview only");
         return;
     }
@@ -359,27 +389,36 @@ void MainWindow::toggleConnection() {
 
     setStatus("Connecting…");
     QApplication::processEvents();
-    QString err;
-    if (!device_.open(std::uint16_t(vid), std::uint16_t(pid), !legacy_->isChecked(), reset_->isChecked(), &err)) {
-        setStatus(err, true);
+
+    if (!device_.open(std::uint16_t(vid), std::uint16_t(pid), !legacy_->isChecked(), reset_->isChecked(), &connectionErr_)) {
+        setStatus(connectionErr_, true);
+        device_.close();
         return;
     }
     if (!handshake_->isChecked())   // otherwise the handshake is sent with every update
         for (const auto& pkt : bloody::initSequence())
-            if (!device_.send(pkt, &err)) { setStatus(err, true); device_.close(); return; }
-    lastSent_.clear();
-    connectBtn_->setText("Disconnect");
+            if (!device_.send(pkt, &connectionErr_)) {
+                setStatus(connectionErr_, true);
+                device_.close();
+                return;
+            }
+    // lastSent_.clear();
     setStatus("Connected via " + device_.backend() + ". If nothing changes, press Fn+1 on the keyboard.");
 }
 
-void MainWindow::sendFrame(const std::vector<QRgb>& colors) {
+bool MainWindow::sendFrame(const std::vector<QRgb>& colors) {
+    if (!device_.isOpen()) {
+        // lastSent_.clear();
+        return false;
+    }
+
     // The keyboard has 116 LED slots, the preview 104 keys: unused slots repeat the first key.
     std::vector<QRgb> leds(bloody::kLedCount, colors.empty() ? qRgb(0, 0, 0) : colors.front());
     if (!params_.uniform)
         std::copy_n(colors.begin(), std::min<std::size_t>(colors.size(), leds.size()), leds.begin());
 
-    if (leds == lastSent_) return;   // nothing changed (e.g. Static effect)
-    lastSent_ = leds;
+    // if (leds == lastSent_) return true;   // nothing changed (e.g. Static effect)
+    // lastSent_ = leds;
     ++sends_;
 
     std::vector<QByteArray> packets;
@@ -391,31 +430,38 @@ void MainWindow::sendFrame(const std::vector<QRgb>& colors) {
     for (const auto& pkt : packets) {
         if (!device_.send(pkt, &err)) {
             device_.close();
-            connectBtn_->setText("Connect");
+            // lastSent_.clear();
             setStatus("USB error: " + err, true);
-            return;
+            // app_status_ = AppStatus::UsbDisconnected;
+            return false;
         }
     }
+
+    return true;
 }
 
-void MainWindow::tick() {
+void MainWindow::renderUi() {
     const double t = clock_.elapsed() / 1000.0;
-    std::vector<QRgb> colors;
-    if (lightsOff_) {
-        colors.assign(layout_.size(), qRgb(0, 0, 0));
-    } else if (activeUser_ >= 0) {
-        colors = userRenderer_.render(t * params_.speed, layout_, params_.uniform, params_.brightness);
-        const QString e = userRenderer_.error();
-        if (e != lastEffectError_) {
-            lastEffectError_ = e;
-            if (!e.isEmpty()) setStatus("Effect error: " + e, true);
-        }
-    } else {
-        colors = bloody::renderEffect(params_, t, layout_);
+
+    // First run
+    if (lastEffect_ == bloody::EffectType::None) {
+        rendenKeyboardEffect(t);
+        view_->setColors(colorsRendered_);
+        lastEffect_ = params_.type;
     }
-    view_->setColors(colors);
+
+    // Skip the continuous color update if the effect is a static glow.
+    if (params_.type != bloody::EffectType::Static) {
+        rendenKeyboardEffect(t);
+        view_->setColors(colorsRendered_);
+        lastEffect_ = params_.type;
+    } else if (lastEffect_ != bloody::EffectType::Static) { // Effect was changed (was static glow)
+        rendenKeyboardEffect(t);
+        view_->setColors(colorsRendered_);
+        lastEffect_ = params_.type;
+    }
+
     ++frames_;
-    if (device_.isOpen() && apply_->isChecked()) sendFrame(colors);
 
     if (fpsClock_.elapsed() >= 1000) {
         const double s = fpsClock_.restart() / 1000.0;
@@ -423,48 +469,97 @@ void MainWindow::tick() {
                                .arg(frames_ / s, 0, 'f', 1).arg(sends_ / s, 0, 'f', 1));
         frames_ = sends_ = 0;
     }
+
+    if (device_.isOpen()) {
+        if (connectBtn_->text() != "Disconnect")
+            connectBtn_->setText("Disconnect");
+
+        if (apply_->isChecked()) {
+            if (!sendFrame(colorsRendered_)) {
+                ///\todo
+            };
+        }
+
+        connectBtn_->setDisabled(reconnect_->isChecked());
+    } else {
+        if (connectBtn_->text() != "Connect")
+            connectBtn_->setText("Connect");
+        if (!reconnect_->isChecked())
+            connectBtn_->setDisabled(false);
+    }
+}
+
+void MainWindow::rendenKeyboardEffect(const double t){
+    colorsRendered_.clear();
+
+    if (lightsOff_) {
+        colorsRendered_.assign(layout_.size(), qRgb(0, 0, 0));
+    } else if (activeUser_ >= 0) {
+        colorsRendered_ = userRenderer_.render(t * params_.speed, layout_, params_.uniform, params_.brightness);
+        const QString e = userRenderer_.error();
+        if (e != lastEffectError_) {
+            lastEffectError_ = e;
+            if (!e.isEmpty())
+                setStatus("Effect error: " + e, true);
+        }
+    } else {
+        colorsRendered_ = bloody::renderEffect(params_, t, layout_);
+    }
 }
 
 // ------------------------------------------------------------------ tray
 
 void MainWindow::buildTray() {
-    if (!QSystemTrayIcon::isSystemTrayAvailable()) return;
+    if (!QSystemTrayIcon::isSystemTrayAvailable())
+        return;
     tray_ = new QSystemTrayIcon(makeIcon(), this);
     tray_->setToolTip("Bloody RGB Studio");
 
     auto toggleWindow = [this] {
-        if (isVisible()) { hide(); }
-        else { show(); raise(); activateWindow(); }
+        if (isVisible()) {
+            hide();
+        } else {
+            show();
+            raise();
+            activateWindow();
+        }
     };
 
     trayMenu_ = new QMenu(this);
     connect(trayMenu_->addAction("Show / Hide"), &QAction::triggered, this, toggleWindow);
     trayMenu_->addSeparator();
     effectGroup_ = new QActionGroup(this);
-    effectsEnd_ = trayMenu_->addSeparator();   // effect actions are inserted before this
+    effectsEnd_ = trayMenu_->addSeparator(); // effect actions are inserted before this
 
-    auto* send = trayMenu_->addAction("Send to keyboard");
+    auto *send = trayMenu_->addAction("Send to keyboard");
     send->setCheckable(true);
     send->setChecked(apply_->isChecked());
     connect(send, &QAction::toggled, apply_, &QCheckBox::setChecked);
     connect(apply_, &QCheckBox::toggled, send, &QAction::setChecked);
     trayMenu_->addSeparator();
-    connect(trayMenu_->addAction("Quit"), &QAction::triggered, this, [this] { quitting_ = true; qApp->quit(); });
+    connect(trayMenu_->addAction("Quit"), &QAction::triggered, this, [this] {
+        quitting_ = true;
+        qApp->quit();
+    });
 
     tray_->setContextMenu(trayMenu_);
     connect(tray_, &QSystemTrayIcon::activated, this, [toggleWindow](QSystemTrayIcon::ActivationReason r) {
-        if (r == QSystemTrayIcon::Trigger) toggleWindow();
+        if (r == QSystemTrayIcon::Trigger)
+            toggleWindow();
     });
     tray_->show();
 }
 
-void MainWindow::closeEvent(QCloseEvent* e) {
+void MainWindow::closeEvent(QCloseEvent *e) {
     if (tray_ && tray_->isVisible() && !quitting_) {
         hide();
         e->ignore();
         if (!trayHintShown_) {
-            tray_->showMessage("Bloody RGB Studio", "Still running in the tray. Use the tray menu to quit.",
-                               QSystemTrayIcon::Information, 3000);
+            tray_->showMessage(
+                "Bloody RGB Studio",
+                "Still running in the tray. Use the tray menu to quit.",
+                QSystemTrayIcon::Information,
+                3000);
             trayHintShown_ = true;
         }
         return;

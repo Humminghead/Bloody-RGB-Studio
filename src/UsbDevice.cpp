@@ -7,6 +7,7 @@
 #include <fcntl.h>
 #include <libusb-1.0/libusb.h>
 #include <linux/hidraw.h>
+#include <qregularexpression.h>
 #include <sys/ioctl.h>
 #include <unistd.h>
 
@@ -20,8 +21,8 @@ constexpr unsigned kTimeoutMs = 1000;
 
 bool UsbDevice::open(std::uint16_t vid, std::uint16_t pid, bool preferHidraw, bool resetFirst, QString* error) {
     close();
-    if (!preferHidraw) return openLibusb(vid, pid, error);
-    if (!resetFirst) return openHidraw(vid, pid, error);
+    if (!preferHidraw) return openLibUsb(vid, pid, error);
+    if (!resetFirst) return openHidRaw(vid, pid, error);
 
     // Same effect as pyusb's set_configuration() in the original tool: the kernel
     // re-creates all interfaces (the keyboard re-binds within a moment), then we
@@ -29,10 +30,27 @@ bool UsbDevice::open(std::uint16_t vid, std::uint16_t pid, bool preferHidraw, bo
     QString ignored;
     resetConfiguration(vid, pid, &ignored);
     for (int i = 0; i < 40; ++i) {
-        if (openHidraw(vid, pid, error)) return true;
+        if (openHidRaw(vid, pid, error)) {
+            return true;
+        }
         QThread::msleep(100);
     }
     return false;
+}
+
+std::optional<QString> UsbDevice::openHidNode(const QString &name, const QString& hidId){
+    const QString base = ("/sys/class/hidraw/" + name + "/device/");
+    QFile uevent(base + "uevent");
+    if (!uevent.open(QIODevice::ReadOnly) || !QString::fromUtf8(uevent.readAll()).contains(hidId)) return uevent.errorString();
+
+    QFile ifc(base + "../bInterfaceNumber");
+    if (!ifc.open(QIODevice::ReadOnly) || QString::fromUtf8(ifc.readAll()).trimmed().toInt(nullptr, 16) != kInterface)
+        return ifc.errorString();
+
+    fd_ = ::open(("/dev/" + name).toLocal8Bit().constData(), O_RDWR);
+    if (fd_ >= 0) { backend_ = "hidraw (/dev/" + name + ")";
+        return std::nullopt; }
+    return "Cannot open /dev/" + name + ": " + std::strerror(errno) + " (install the udev rule, re-plug)";
 }
 
 bool UsbDevice::resetConfiguration(std::uint16_t vid, std::uint16_t pid, QString* error) {
@@ -56,29 +74,39 @@ bool UsbDevice::resetConfiguration(std::uint16_t vid, std::uint16_t pid, QString
     return ok;
 }
 
-bool UsbDevice::openHidraw(std::uint16_t vid, std::uint16_t pid, QString* error) {
-    const QString want = QString("HID_ID=0003:%1:%2").arg(vid, 8, 16, QChar('0')).arg(pid, 8, 16, QChar('0')).toUpper();
+bool UsbDevice::openHidRaw(std::uint16_t vid, std::uint16_t pid, QString* error, QString* node) {
+    const QString want = createHidId(vid,pid);
     QString lastError = "No hidraw node found for interface 2 of this keyboard.";
 
-    const QStringList nodes = QDir("/sys/class/hidraw").entryList(QDir::AllEntries | QDir::NoDotAndDotDot);
+    QStringList nodes = QDir("/sys/class/hidraw").entryList(QDir::AllEntries | QDir::NoDotAndDotDot);
+
+    if (node) {
+        QRegularExpressionMatch rmatch;
+        auto contains = node->contains(QRegularExpression("hidraw\\d"), &rmatch);
+
+        if (auto idx = nodes.indexOf(rmatch.captured()); contains && idx!=-1)
+              std::swap(nodes.front(), nodes[idx]);
+        else if (contains && idx == -1) {
+            nodes.append(*node);
+            std::swap(nodes.front(), nodes.back());
+        }
+    }
+
     for (const QString& name : nodes) {
-        const QString base = "/sys/class/hidraw/" + name + "/device/";
-        QFile uevent(base + "uevent");
-        if (!uevent.open(QIODevice::ReadOnly) || !QString::fromUtf8(uevent.readAll()).contains(want)) continue;
-
-        QFile ifc(base + "../bInterfaceNumber");
-        if (!ifc.open(QIODevice::ReadOnly) || QString::fromUtf8(ifc.readAll()).trimmed().toInt(nullptr, 16) != kInterface)
+        if (auto error = openHidNode(name, want)) {
+            lastError.clear();
+            lastError.append("Cannot open /dev/" + name + ": ");
+            lastError.append(error.value());
             continue;
-
-        fd_ = ::open(("/dev/" + name).toLocal8Bit().constData(), O_RDWR);
-        if (fd_ >= 0) { backend_ = "hidraw (/dev/" + name + ")"; return true; }
-        lastError = "Cannot open /dev/" + name + ": " + std::strerror(errno) + " (install the udev rule, re-plug)";
+        }
+        status_ = Status::UsbConnected;
+        return true;
     }
     if (error) *error = lastError;
     return false;
 }
 
-bool UsbDevice::openLibusb(std::uint16_t vid, std::uint16_t pid, QString* error) {
+bool UsbDevice::openLibUsb(std::uint16_t vid, std::uint16_t pid, QString* error) {
     auto fail = [&](const QString& msg) { if (error) *error = msg; close(); return false; };
     if (int rc = libusb_init(&ctx_); rc < 0) return fail(QString("libusb init failed: ") + libusb_strerror(rc));
     handle_ = libusb_open_device_with_vid_pid(ctx_, vid, pid);
@@ -87,6 +115,7 @@ bool UsbDevice::openLibusb(std::uint16_t vid, std::uint16_t pid, QString* error)
     if (int rc = libusb_claim_interface(handle_, kInterface); rc < 0)
         return fail(QString("Cannot claim interface: ") + libusb_strerror(rc));
     backend_ = "libusb (legacy)";
+    status_ = Status::UsbConnected;
     return true;
 }
 
@@ -95,7 +124,10 @@ void UsbDevice::close() {
     if (handle_) { libusb_release_interface(handle_, kInterface); libusb_close(handle_); handle_ = nullptr; }
     if (ctx_) { libusb_exit(ctx_); ctx_ = nullptr; }
     backend_.clear();
+    status_ = Status::UsbDisconnected;
 }
+
+bool UsbDevice::isOpen() const { return status_ == Status::UsbConnected; }
 
 bool UsbDevice::send(const QByteArray& packet, QString* error) {
     if (fd_ >= 0) {

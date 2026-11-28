@@ -1,5 +1,6 @@
 #pragma once
 #include "Effects.hpp"
+#include "HidRawMonitor.hpp"
 #include "KeyboardView.hpp"
 #include "ScreenWatcher.hpp"
 #include "UsbDevice.hpp"
@@ -34,7 +35,7 @@ protected:
 private:
     static constexpr int kBuiltinCount = int(bloody::EffectType::Twinkle) + 1;
 
-    void buildUi();
+    void buildUi(const QString &devVid, const QString &devPid);
     void buildTray();
     void rebuildEffectList(const QString& selectKey);
     void rebuildTrayEffects();
@@ -47,9 +48,10 @@ private:
     QString uniqueName(const QString& name, int skipIndex) const;
     void persistUserEffects();
 
-    void tick();
+    void renderUi();
+    void rendenKeyboardEffect(const double t);
     void toggleConnection();
-    void sendFrame(const std::vector<QRgb>& colors);
+    bool sendFrame(const std::vector<QRgb>& colors);
     void pickColor(bool primary);
     void refreshColorButtons();
     void setStatus(const QString& text, bool error = false);
@@ -66,7 +68,11 @@ private:
     QString lastEffectError_;
 
     UsbDevice device_;
-    std::vector<QRgb> lastSent_;
+    HidrawMonitor hidmon_;
+    std::vector<QRgb> colorsRendered_;
+    bloody::EffectType lastEffect_{bloody::EffectType::None};
+    QString connectionErr_;
+    std::jthread hidmon_th_;
     QElapsedTimer clock_, fpsClock_;
     QTimer timer_;
     int frames_ = 0, sends_ = 0;
@@ -77,7 +83,8 @@ private:
     QPushButton *primaryBtn_ = nullptr, *secondaryBtn_ = nullptr, *connectBtn_ = nullptr;
     QPushButton *newBtn_ = nullptr, *editBtn_ = nullptr, *delBtn_ = nullptr;
     QSlider *speed_ = nullptr, *brightness_ = nullptr;
-    QCheckBox *uniform_ = nullptr, *handshake_ = nullptr, *apply_ = nullptr, *legacy_ = nullptr, *reset_ = nullptr;
+    QCheckBox *uniform_ = nullptr, *handshake_ = nullptr, *apply_ = nullptr, *legacy_ = nullptr, *reset_ = nullptr,
+              *reconnect_ = nullptr;
     QSpinBox* fps_ = nullptr;
     QComboBox* offEffect_ = nullptr;
     QCheckBox* offOnLock_ = nullptr;
@@ -90,5 +97,5 @@ private:
     QAction* effectsEnd_ = nullptr;
     QActionGroup* effectGroup_ = nullptr;
     QList<QAction*> effectActions_;
-    bool quitting_ = false, trayHintShown_ = false;
+    bool quitting_ = false, trayHintShown_ = false;  
 };
