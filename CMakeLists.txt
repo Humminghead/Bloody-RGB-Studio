@@ -24,7 +24,7 @@ qt_add_executable(bloody-rgb
     src/HidRawMonitor.hpp src/HidRawMonitor.cpp
 )
 
-target_link_libraries(bloody-rgb PRIVATE Qt6::Widgets Qt6::Qml Qt6::DBus PkgConfig::LIBUSB)
+target_link_libraries(bloody-rgb PRIVATE Qt6::Widgets Qt6::Qml Qt6::DBus PkgConfig::LIBUSB -ludev)
 target_compile_options(bloody-rgb PRIVATE -Wall -Wextra)
 
 install(TARGETS bloody-rgb RUNTIME DESTINATION bin)
