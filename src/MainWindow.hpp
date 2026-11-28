@@ -1,5 +1,6 @@
 #pragma once
 #include "Effects.hpp"
+#include "HidRawMonitor.hpp"
 #include "KeyboardView.hpp"
 #include "ScreenWatcher.hpp"
 #include "UsbDevice.hpp"
@@ -22,12 +23,6 @@
 #include <QSystemTrayIcon>
 #include <QTimer>
 
-enum class AppStatus{
-    UsbConnected,
-    UsbDisconnected,
-    Unknown
-};
-
 class MainWindow : public QMainWindow {
     Q_OBJECT
 public:
@@ -40,7 +35,7 @@ protected:
 private:
     static constexpr int kBuiltinCount = int(bloody::EffectType::Twinkle) + 1;
 
-    void buildUi();
+    void buildUi(const QString &devVid, const QString &devPid);
     void buildTray();
     void rebuildEffectList(const QString& selectKey);
     void rebuildTrayEffects();
@@ -53,7 +48,8 @@ private:
     QString uniqueName(const QString& name, int skipIndex) const;
     void persistUserEffects();
 
-    void tick();
+    void renderUi();
+    void rendenKeyboardEffect(const double t);
     void toggleConnection();
     bool sendFrame(const std::vector<QRgb>& colors);
     void pickColor(bool primary);
@@ -72,7 +68,11 @@ private:
     QString lastEffectError_;
 
     UsbDevice device_;
-    std::vector<QRgb> lastSent_;
+    HidrawMonitor hidmon_;
+    std::vector<QRgb> colorsRendered_;
+    bloody::EffectType lastEffect_{bloody::EffectType::None};
+    QString connectionErr_;
+    std::jthread hidmon_th_;
     QElapsedTimer clock_, fpsClock_;
     QTimer timer_;
     int frames_ = 0, sends_ = 0;
@@ -97,6 +97,5 @@ private:
     QAction* effectsEnd_ = nullptr;
     QActionGroup* effectGroup_ = nullptr;
     QList<QAction*> effectActions_;
-    bool quitting_ = false, trayHintShown_ = false;
-    AppStatus app_status_{AppStatus::Unknown};
+    bool quitting_ = false, trayHintShown_ = false;  
 };
