@@ -8,7 +8,7 @@
 
 namespace bloody {
 
-enum class EffectType { Static, Breathing, ColorCycle, RainbowWave, GradientWave, Twinkle };
+enum class EffectType { Static, Breathing, ColorCycle, RainbowWave, GradientWave, Twinkle, None };
 
 inline const char* effectName(EffectType t) {
     switch (t) {
@@ -18,8 +18,9 @@ inline const char* effectName(EffectType t) {
         case EffectType::RainbowWave:  return "Rainbow wave";
         case EffectType::GradientWave: return "Gradient wave";
         case EffectType::Twinkle:      return "Twinkle";
-    }
-    return "";
+        default:
+            return "";
+    }    
 }
 
 struct EffectParams {
